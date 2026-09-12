@@ -16,9 +16,20 @@ def main():
     elif(provider["API"] == "openai"):
         llm = openai_llm(provider)
     
-    print(llm.get_model_info())
+    model_list = llm.get_model_list()
 
+    if model_list is None:
+        print("Error retrieving model information.")
+        return
 
+    print(f"Available models: {model_list}")
+
+    model = model_list[0]
+    print(f"Using model: {model}")
+
+    response = llm.get_response(model, "You are {model}.", "Hi, who are u?")
+
+    print(response)
 
 
 if __name__ == "__main__":
