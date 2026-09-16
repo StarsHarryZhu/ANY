@@ -14,11 +14,13 @@ class openai_llm:
         return [model.id for model in model_list]
 
 
-    def get_response(self, model: str, instructions: str, input: str):
+    def get_response(self, model: str, instructions: str, input: str, effort: str):
         response = self.client.responses.create(
+            temperature = 1,
             model = model,
             instructions = instructions,
-            input = input
+            input = input,
+            reasoning = {"effort": effort}
         )
 
         return response
