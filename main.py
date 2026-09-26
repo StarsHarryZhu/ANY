@@ -1,6 +1,6 @@
 from src.utils import load_api_config
 from src.llm.anthropic_llm import anthropic_llm
-from src.llm.openai_llm import openai_llm
+from src.llm.response_llm import response_llm
 from src.control_loop import control_loop
 
 
@@ -10,8 +10,9 @@ def main():
 
     if(provider["API"] == "anthropic"):
         llm = anthropic_llm(provider)
-    elif(provider["API"] == "openai"):
-        llm = openai_llm(provider)
+    elif(provider["API"] == "response"):
+        llm = response_llm(provider)
+
 
     control_loop(llm, provider["models"])
 

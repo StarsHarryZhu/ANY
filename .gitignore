@@ -8,6 +8,7 @@ api_keys.json
 
 # ===== 当前已经存在 =====
 .venv/
+_reference_api_respond
 
 # ===== 跑一次 Python 就会出现 =====
 __pycache__/
