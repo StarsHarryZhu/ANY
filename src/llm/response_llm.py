@@ -1,6 +1,6 @@
 import openai
 
-from src.llm.response_base import response_protocol
+from src.llm.response_base import response_protocol, stream_protocol
 
 class response_llm:
     def __init__(self, provider: dict):
@@ -16,19 +16,46 @@ class response_llm:
         return [model.id for model in model_list]
 
 
-    def get_response(self, model: str, instructions: str, input, effort: str, tools: list = None):
-        kwargs = {"tools": tools, "tool_choice": "auto"} if tools else {}
-
-        response = self.client.responses.create(
+    def _params(self, model, instructions, input, effort, tools, max_output_tokens):
+        # 阻塞与流式两条路共用，避免哪天只改了一边导致请求体悄悄分叉
+        params = dict(
+            max_output_tokens = max_output_tokens if max_output_tokens is not None else 16384,
             temperature = 1,
             model = model,
             instructions = instructions,
             input = input,
             reasoning = {"effort": effort},
-            **kwargs
+        )
+        if tools:
+            params["tools"] = tools
+            params["tool_choice"] = "auto"
+        return params
+
+
+    def get_response(self, model: str, instructions: str, input, effort: str, tools: list = None, max_output_tokens: int = None):
+        response = self.client.responses.create(
+            **self._params(model, instructions, input, effort, tools, max_output_tokens)
         )
 
         return response_response(response)
+
+
+    def start_stream(self, model: str, instructions: str, input, effort: str, tools: list = None, max_output_tokens: int = None):
+        manager = self.client.responses.stream(
+            **self._params(model, instructions, input, effort, tools, max_output_tokens)
+        )
+
+        # __enter__ 这一行才真正发出请求；返回后连接已经开着，调用方要立刻
+        # 进 try，中间不要插入可能抛异常的代码。
+        return response_stream(manager, manager.__enter__())
+
+
+    def stream_complete(self, stream):
+        # drain 必须在 close 之前，drain 自己失败也要保证关闭
+        try:
+            return response_response(stream.raw.get_final_response())
+        finally:
+            stream.close()
 
 
 class response_response(response_protocol):
@@ -139,3 +166,26 @@ class response_response(response_protocol):
             {"type": "function_call_output", "call_id": call.call_id, "output": result}
             for call, result in zip(calls, results)
         ]
+
+
+class response_stream(stream_protocol):
+    def __init__(self, manager, raw):
+        self.manager = manager
+        self._raw = raw
+
+    def __repr__(self):
+        return repr(self._raw)
+
+    @property
+    def raw(self):
+        return self._raw
+
+    def __iter__(self):
+        # OpenAI 这边没有 anthropic 那种 text_stream 便利属性，只能自己筛事件。
+        # 同样必须遍历 self._raw：终稿是 ResponseStream 内部按事件累积出来的。
+        for event in self._raw:
+            if event.type == "response.output_text.delta":
+                yield event.delta
+
+    def close(self):
+        self.manager.__exit__(None, None, None)

@@ -2,7 +2,7 @@ import json
 
 import anthropic
 
-from src.llm.response_base import response_protocol
+from src.llm.response_base import response_protocol, stream_protocol
 
 
 class anthropic_llm:
@@ -15,19 +15,46 @@ class anthropic_llm:
     #     except anthropic.APIError:
     #         return None
 
-    def get_response(self, model: str, instructions: str, input, effort: str, tools: list = None):
-        kwargs = {"tools": tools} if tools else {}
-
-        response = self.client.messages.create(
-            max_tokens = 16384,
+    def _params(self, model, instructions, input, effort, tools, max_output_tokens):
+        # 阻塞与流式两条路共用，避免哪天只改了一边导致请求体悄悄分叉。
+        # max_tokens 没有默认值，这个 16384 兜底必须留在这里。
+        params = dict(
+            max_tokens = max_output_tokens if max_output_tokens is not None else 16384,
             model = model,
             system = instructions,
             messages = input,
             output_config = {"effort": effort},
-            **kwargs
+        )
+        if tools:
+            params["tools"] = tools
+        return params
+
+    def get_response(self, model: str, instructions: str, input, effort: str, tools: list = None, max_output_tokens: int = None):
+        # 注意：非流式会被 SDK 的时间预估卡住——max_tokens 超过 21333 时
+        # create 直接抛 ValueError("Streaming is required")。走长输出请用
+        # start_stream / stream_complete。
+        response = self.client.messages.create(
+            **self._params(model, instructions, input, effort, tools, max_output_tokens)
         )
 
         return anthropic_response(response)
+
+    def start_stream(self, model: str, instructions: str, input, effort: str, tools: list = None, max_output_tokens: int = None):
+        manager = self.client.messages.stream(
+            **self._params(model, instructions, input, effort, tools, max_output_tokens)
+        )
+
+        # __enter__ 这一行才真正发出请求；返回后连接已经开着，调用方要立刻
+        # 进 try，中间不要插入可能抛异常的代码。
+        return anthropic_stream(manager, manager.__enter__())
+
+    def stream_complete(self, stream):
+        # drain 必须在 close 之前：关掉之后再 get_final_message 会 RuntimeError。
+        # drain 自己失败（零事件流的裸 AssertionError、中途网络错误）也要保证关闭。
+        try:
+            return anthropic_response(stream.raw.get_final_message())
+        finally:
+            stream.close()
 
 
 
@@ -130,3 +157,30 @@ class anthropic_response(response_protocol):
                 for call, result in zip(calls, results)
             ]},
         ]
+
+
+class anthropic_stream(stream_protocol):
+    def __init__(self, manager, raw):
+        self.manager = manager
+        self._raw = raw
+
+    def __repr__(self):
+        return repr(self._raw)
+
+    @property
+    def raw(self):
+        return self._raw
+
+    def __iter__(self):
+        # 和 SDK 自己的 MessageStream.text_stream 等价。必须遍历 self._raw 这个
+        # SDK 流对象，不能穿透到它内部的 _raw_stream：终稿快照是 MessageStream
+        # 在 __stream__ 里累积的，绕过去就会"有增量、没终稿"，最后在
+        # stream_complete 里炸出一个看不出原因的 AssertionError。
+        for event in self._raw:
+            if event.type == "content_block_delta" and event.delta.type == "text_delta":
+                yield event.delta.text
+
+    def close(self):
+        # 走 manager.__exit__ 而不是 raw.close()，SDK 将来加在 manager 上的
+        # 清理也能一并生效。幂等。
+        self.manager.__exit__(None, None, None)

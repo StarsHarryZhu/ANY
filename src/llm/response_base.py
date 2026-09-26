@@ -1,5 +1,5 @@
 from abc import abstractmethod
-from typing import Any, Protocol
+from typing import Any, Iterator, Protocol
 
 
 class response_protocol(Protocol):
@@ -167,4 +167,37 @@ class response_protocol(Protocol):
 
         内部按 zip(calls, results) 配对，调用方需保持顺序。
         """
+        ...
+
+
+class stream_protocol(Protocol):
+    """anthropic_stream 与 response_stream 共同遵守的契约。
+
+    与 response_protocol 同一条理由：两个 wrapper 显式继承，漏实现任何成员
+    实例化就 TypeError。这里 contract 很短，但 close() 是唯一"漏了会漏连接、
+    且不会立刻报错"的成员，最值得让它在构造期就炸。
+    """
+
+    @property
+    @abstractmethod
+    def raw(self) -> Any:
+        """provider 的原生流对象（已经 __enter__ 过，请求已在飞）。
+
+        注意实现必须是 class 级 @property：ABCMeta 从 class __dict__ 算
+        __abstractmethods__，在 __init__ 里 self.raw = raw 覆盖不掉抽象属性。
+        """
+        ...
+
+    @abstractmethod
+    def __iter__(self) -> Iterator[str]:
+        """只产出文本增量，思考 / 工具参数 / 各类信封事件都已在 wrapper 内滤掉。
+
+        单次遍历，不可重放：底层 SDK 流只有一个共享生成器。要完整文本请从
+        stream_complete 返回的 response.output_text 取。
+        """
+        ...
+
+    @abstractmethod
+    def close(self) -> None:
+        """关闭底层连接，幂等。必须在 stream_complete 取到终稿之后调用。"""
         ...
