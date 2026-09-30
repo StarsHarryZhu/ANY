@@ -98,17 +98,21 @@ def control_loop(llm, models: list, system_prompt: str = None, context: list = N
                     ))
                     results.append(result)
 
-                # 信封的有无由 wrapper 决定，两个 provider 都是这一行
-                context.extend(response.tool_continuation(calls, results))
+                # 信封的有无由 wrapper 决定，两个 provider 都是这一行。
+                # 只传 results：调用项由 wrapper 从 response.tool_calls 取。
+                context.extend(response.tool_continuation(results))
 
 
             
 
             context.append({"role": "assistant", "content": response.output_text})
 
-            # 回复本身已经由 Live 渲染过了，这里只剩状态行
-            console.print(f"[yellow]context:[/yellow] {response.total_tokens} / {max_context_window} \
-                          ({response.total_tokens / max_context_window * 100:.1f}%)\n")
+            # 回复本身已经由 Live 渲染过了，这里只剩状态行。
+            # 两处都要用 used_context 而不是 total_tokens：后者在 Anthropic 上
+            # 不含缓存读写，而缓存命中的那部分正是长会话里上下文的大头，拿它
+            # 算占用率会低得离谱，且越到后面错得越多。同一个量，别只改一半。
+            console.print(f"[yellow]context:[/yellow] {response.used_context} / {max_context_window} \
+                          ({response.used_context / max_context_window * 100:.1f}%)\n")
 
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Exiting control loop.[/dim]")

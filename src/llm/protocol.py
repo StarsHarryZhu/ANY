@@ -2,8 +2,57 @@ from abc import abstractmethod
 from typing import Any, Iterator, Protocol
 
 
+class llm_protocol(Protocol):
+    """messages_llm 与 responses_llm 共同遵守的契约：循环层握着的全部接口。
+
+    这是最外层的接缝。成员只放循环层真的会调的：get_response 与
+    get_model_list 故意不在里面——前者当前配置下不可用，后者只有 OpenAI
+    一侧实现了（messages_llm 里是注释掉的），放进来会让
+    messages_llm(provider) 在构造期 TypeError。
+
+    与另两个协议同一条理由：两个 wrapper 显式继承，漏实现或签名漂移都在
+    构造期炸掉，而不是等某个分支真的跑到才发现。
+    """
+
+    @abstractmethod
+    def start_stream(self, model: str, instructions: str, input, effort: str, tools: list = None, max_output_tokens: int = None):
+        """发起流式请求，返回一个 stream_protocol。
+
+        实现里 `manager.__enter__()` 那一行才真正发出请求；返回后连接已经
+        开着，调用方必须立刻进 try，中间不要插入可能抛异常的代码。
+        """
+        ...
+
+    @abstractmethod
+    def stream_complete(self, stream):
+        """drain 到终稿，返回 response_protocol，并保证底层连接已关闭。
+
+        实现必须是 `try: drain finally: close`，顺序不能反：close 之后再取
+        终稿会 RuntimeError，而 drain 自己失败（零事件流、中途网络错误）
+        也必须保证关闭。
+        """
+        ...
+
+    @abstractmethod
+    def tool_definitions(self, tools: list) -> list:
+        """把中立工具定义转成本家线上形状，请求体里 tools 字段的最终内容。
+
+        中立形状（工具注册表就照这个写，与 provider 无关）：
+
+            {"name": str, "description": str, "parameters": <JSON Schema>}
+
+        两家只在两处不同，所以这个转换必须待在本层：Anthropic 的 schema 键名
+        是 input_schema，OpenAI Responses 的 parameters 外面还要包一层
+        {"type": "function"}。写得不对的后果是不对称的——Anthropic 端点直接
+        拒掉整个请求，OpenAI 只是模型看不到工具。
+
+        _params() 自己会调它，调用方（循环层）传中立的即可，不要预先转换。
+        """
+        ...
+
+
 class response_protocol(Protocol):
-    """anthropic_response 与 response_response 共同遵守的契约。
+    """messages_response 与 responses_response 共同遵守的契约。
 
     两个 wrapper 显式继承本协议：漏实现任何一个成员，实例化时就会 TypeError，
     这样两边不会悄悄漂移。协议本身不参与运行，只是清单 + 类型提示。
@@ -44,11 +93,12 @@ class response_protocol(Protocol):
     @property
     @abstractmethod
     def total_tokens(self) -> int:
-        """上下文总用量 = input_tokens + output_tokens。
+        """总 token = input_tokens + output_tokens，不含缓存读写。
 
-        沿用 input + output 口径，不含缓存读写（见 input_tokens 的说明）。
-        在 Anthropic 上它量的是"未被缓存的输入 + 输出"，不是上下文长度；
-        要那个用 used_context。
+        **这不是上下文长度**，所以别再叫它"上下文用量"：在 Anthropic 上它量的
+        是"未被缓存的输入 + 输出"，长会话里缓存命中的那部分全被漏掉（缓存的
+        占比越大错得越多）。要上下文长度用 used_context——控制台状态行用的
+        就是那个。
         """
         ...
 
@@ -157,7 +207,7 @@ class response_protocol(Protocol):
         ...
 
     @abstractmethod
-    def tool_continuation(self, calls: list, results: list) -> list:
+    def tool_continuation(self, results: list) -> list:
         """工具轮的唯一出口：返回按顺序追加进 context 的整段。
 
         信封的有无由本方法决定，两个 provider 相反，所以不给调用方拼：
@@ -165,13 +215,17 @@ class response_protocol(Protocol):
         Anthropic 必须包成 assistant / user 两条消息，且 assistant 那条要
         带上完整的原始块列表（含 thinking），否则下一轮请求报错。
 
-        内部按 zip(calls, results) 配对，调用方需保持顺序。
+        只收 results：调用项由实现从 self.tool_calls 取，与 results 按 zip
+        配对，所以调用方只负责 results 的顺序和条数（照 self.tool_calls 遍历
+        生成就不会错）。以前 calls 也由调用方传，等于允许它传一份对不上的
+        列表，zip 会静默截断成短的那个，最终表现为服务端拒绝一个看不出原因
+        的请求。
         """
         ...
 
 
 class stream_protocol(Protocol):
-    """anthropic_stream 与 response_stream 共同遵守的契约。
+    """messages_stream 与 responses_stream 共同遵守的契约。
 
     与 response_protocol 同一条理由：两个 wrapper 显式继承，漏实现任何成员
     实例化就 TypeError。这里 contract 很短，但 close() 是唯一"漏了会漏连接、

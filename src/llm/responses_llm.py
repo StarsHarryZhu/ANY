@@ -1,8 +1,8 @@
 import openai
 
-from src.llm.response_base import response_protocol, stream_protocol
+from src.llm.protocol import llm_protocol, response_protocol, stream_protocol
 
-class response_llm:
+class responses_llm(llm_protocol):
     def __init__(self, provider: dict):
         self.client = openai.OpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
 
@@ -27,9 +27,23 @@ class response_llm:
             reasoning = {"effort": effort},
         )
         if tools:
-            params["tools"] = tools
+            params["tools"] = self.tool_definitions(tools)
             params["tool_choice"] = "auto"
         return params
+
+
+    def tool_definitions(self, tools: list) -> list:
+        # 中立 -> OpenAI Responses：schema 直接叫 parameters，外面要包
+        # {"type": "function"}（Responses API 是平铺的，不再套 function 一层）。
+        return [
+            {
+                "type": "function",
+                "name": tool["name"],
+                "description": tool["description"],
+                "parameters": tool["parameters"],
+            }
+            for tool in tools
+        ]
 
 
     def get_response(self, model: str, instructions: str, input, effort: str, tools: list = None, max_output_tokens: int = None):
@@ -37,7 +51,7 @@ class response_llm:
             **self._params(model, instructions, input, effort, tools, max_output_tokens)
         )
 
-        return response_response(response)
+        return responses_response(response)
 
 
     def start_stream(self, model: str, instructions: str, input, effort: str, tools: list = None, max_output_tokens: int = None):
@@ -47,18 +61,18 @@ class response_llm:
 
         # __enter__ 这一行才真正发出请求；返回后连接已经开着，调用方要立刻
         # 进 try，中间不要插入可能抛异常的代码。
-        return response_stream(manager, manager.__enter__())
+        return responses_stream(manager, manager.__enter__())
 
 
     def stream_complete(self, stream):
         # drain 必须在 close 之前，drain 自己失败也要保证关闭
         try:
-            return response_response(stream.raw.get_final_response())
+            return responses_response(stream.raw.get_final_response())
         finally:
             stream.close()
 
 
-class response_response(response_protocol):
+class responses_response(response_protocol):
     def __init__(self, response):
         self.response = response
 
@@ -160,15 +174,16 @@ class response_response(response_protocol):
     def tool_call_id(self, call):
         return call.call_id
 
-    def tool_continuation(self, calls, results):
-        # OpenAI 这边工具项是顶层裸 item，不能套 {"role": ...} 信封
-        return list(calls) + [
+    def tool_continuation(self, results):
+        # OpenAI 这边工具项是顶层裸 item，不能套 {"role": ...} 信封。
+        # self.tool_calls 每次返回新列表，直接拼不会和 response.output 共享引用。
+        return self.tool_calls + [
             {"type": "function_call_output", "call_id": call.call_id, "output": result}
-            for call, result in zip(calls, results)
+            for call, result in zip(self.tool_calls, results)
         ]
 
 
-class response_stream(stream_protocol):
+class responses_stream(stream_protocol):
     def __init__(self, manager, raw):
         self.manager = manager
         self._raw = raw

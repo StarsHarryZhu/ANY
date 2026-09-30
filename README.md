@@ -26,7 +26,7 @@ pip install -r requirements.txt
   "current_provider": "deepseek",
   "providers": {
     "deepseek": {
-      "API": "anthropic",
+      "API": "messages",
       "base_url": "https://api.deepseek.com/anthropic",
       "api_key": "sk-...",
       "models": [
@@ -47,14 +47,14 @@ pip install -r requirements.txt
 | 字段 | 含义 |
 |---|---|
 | `current_provider` | 当前使用 `providers` 里的哪一项 |
-| `providers.<名>.API` | **选择用哪个 wrapper**，取 `"anthropic"` 或 `"response"`。注意这是 SDK 种类，不是厂商名——上例里厂商叫 deepseek，但走的是 Anthropic 兼容端点 |
+| `providers.<名>.API` | **选择用哪个 wrapper**，取 `"messages"` 或 `"responses"`。注意这是 API 种类，不是厂商名——上例里厂商叫 deepseek，但走的是 Anthropic 兼容端点 |
 | `providers.<名>.base_url` | 端点地址。任何提供 Anthropic / OpenAI 兼容接口的服务都能接 |
 | `providers.<名>.api_key` | 密钥 |
 | `models[].context_window` | 上下文窗口，用于计算占用百分比 |
 | `models[].max_output_tokens` | 单次输出上限，直接作为 `max_tokens` / `max_output_tokens` 传出 |
 | `models[].efforts` | 可选的推理强度列表，会作为 `output_config.effort` / `reasoning.effort` 传出 |
 
-> `efforts` 里出现 `none` 不会报错，但 Anthropic 官方文档的枚举是 `low` / `medium` / `high` / `xhigh` / `max`，没有 `none`。这是第三方兼容端点的自由度，具体是否被接受取决于你的服务商。
+> `efforts` 里出现 `none` 不会报错，但 Anthropic 官方文档的枚举是 `low` / `medium` / `high` / `xhigh` / `max`，没有 `none`。这是第三方兼容端点的自由度，具体是否被接受取决于你的服务商——**deepseek 的 Anthropic 兼容端点实测接受 `none`**（2026-09-29），换个服务商要重新验。
 
 > 配置路径是**相对于当前工作目录**写死的（[utils.py:5](src/utils.py#L5) 的 `API_KEYS_FILE = "src/api_keys.json"`），所以必须**从仓库根目录**运行。
 
@@ -74,26 +74,27 @@ src/
   control_loop.py           REPL 主循环：输入、流式渲染、工具轮、用量显示
   utils.py                  配置读取、rich console、questionary 选择器
   llm/
-    response_base.py        两份协议：response_protocol / stream_protocol
-    anthropic_llm.py        Anthropic Messages API 包装
-    response_llm.py         OpenAI Responses API 包装
+    protocol.py             三份协议：llm_protocol / response_protocol / stream_protocol
+    messages_llm.py         Anthropic Messages API 包装
+    responses_llm.py        OpenAI Responses API 包装
   tools/
-    tool_console.py         工具注册表与执行（目前为空，见下）
+    tool_console.py         工具注册表与执行（含一个样例工具，见下）
 ```
 
 ## 架构
 
 分三层，边界很清楚：
 
-**1. 协议层**（[response_base.py](src/llm/response_base.py)）
-两份 `Protocol`：`response_protocol` 描述一个"响应对象"该长什么样（`output_text`、`tool_calls`、`usage`、`stop_reason` …），`stream_protocol` 描述一个"流对象"（产出文本增量、可关闭）。两个 wrapper 都**显式继承**协议，漏实现任何成员会在实例化时 `TypeError`。
+**1. 协议层**（[protocol.py](src/llm/protocol.py)）
+三份 `Protocol`：`llm_protocol` 描述 wrapper 本身（`start_stream` / `stream_complete`，以及把中立工具定义转成线上形状的 `tool_definitions`），`response_protocol` 描述一个"响应对象"该长什么样（`output_text`、`tool_calls`、`usage`、`stop_reason` …），`stream_protocol` 描述一个"流对象"（产出文本增量、可关闭）。两个 wrapper 都**显式继承**协议，漏实现任何成员会在实例化时 `TypeError`。
 
-**2. wrapper 层**（[anthropic_llm.py](src/llm/anthropic_llm.py) / [response_llm.py](src/llm/response_llm.py)）
+**2. wrapper 层**（[messages_llm.py](src/llm/messages_llm.py) / [responses_llm.py](src/llm/responses_llm.py)）
 两个类提供形状相同的入口：
 
 - `get_response(...)` —— 阻塞式，返回响应包装对象
 - `start_stream(...)` —— 发起流式请求，返回流包装对象
 - `stream_complete(stream)` —— 收尾，返回同一套响应包装对象
+- `tool_definitions(tools)` —— 把**中立形状**的工具定义转成本家线上形状（Anthropic 把 `parameters` 改名成 `input_schema`，OpenAI Responses 外面套一层 `{"type": "function"}`）。`_params()` 内部会调它，所以调用方一路传中立的即可，不要预先转换。
 
 同一个 `_params()` 构造两条路的请求体，保证两者不会悄悄分叉。
 
@@ -102,7 +103,7 @@ src/
 
 ## 已知限制
 
-- **工具表是空的。** [tool_console.py](src/tools/tool_console.py) 里 `self.tools` 初始为 `[]`，`tool_define()` 返回空列表，因此两个 wrapper 都会省略 `tools` 参数——工具调用链路目前跑不到。`tool_define()` 里注释掉的那段是 **OpenAI 形状**的示例（`{"type": "function", "parameters": ...}`）；Anthropic 端点要的是 `{"name", "description", "input_schema": ...}`，直接照搬注释会被拒。
+- **工具表里只有一个样例工具。** [tool_console.py](src/tools/tool_console.py) 里的 `get_weather` 返回写死的假数据：链路已接通（注册表存中立形状，线上形状由 wrapper 转换），但还没有真工具，也没有权限确认——注册进来就直执行。工具结果整段进 context，没有长度上限。
 - **没有测试。** 没有测试框架，验证靠临时脚本。
 - **只有 Anthropic 那条路端到端验过。** OpenAI 那条目前只有静态检查——配置里没有可用的 OpenAI 兼容 provider。
 - **`get_response` 对超大输出上限不可用。** 原因见 [src/llm/AGENTS.md](src/llm/AGENTS.md) 的「Anthropic 侧特有的坑」。

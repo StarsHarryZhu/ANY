@@ -2,10 +2,10 @@ import json
 
 import anthropic
 
-from src.llm.response_base import response_protocol, stream_protocol
+from src.llm.protocol import llm_protocol, response_protocol, stream_protocol
 
 
-class anthropic_llm:
+class messages_llm(llm_protocol):
     def __init__(self, provider: dict):
         self.client = anthropic.Client(api_key=provider["api_key"], base_url=provider["base_url"])
 
@@ -26,8 +26,20 @@ class anthropic_llm:
             output_config = {"effort": effort},
         )
         if tools:
-            params["tools"] = tools
+            params["tools"] = self.tool_definitions(tools)
         return params
+
+    def tool_definitions(self, tools: list) -> list:
+        # 中立 -> Anthropic：schema 的键名是 input_schema，不是 parameters。
+        # 名字写错不是"工具不生效"，是整个请求被端点拒掉。
+        return [
+            {
+                "name": tool["name"],
+                "description": tool["description"],
+                "input_schema": tool["parameters"],
+            }
+            for tool in tools
+        ]
 
     def get_response(self, model: str, instructions: str, input, effort: str, tools: list = None, max_output_tokens: int = None):
         # 注意：非流式会被 SDK 的时间预估卡住——max_tokens 超过 21333 时
@@ -37,7 +49,7 @@ class anthropic_llm:
             **self._params(model, instructions, input, effort, tools, max_output_tokens)
         )
 
-        return anthropic_response(response)
+        return messages_response(response)
 
     def start_stream(self, model: str, instructions: str, input, effort: str, tools: list = None, max_output_tokens: int = None):
         manager = self.client.messages.stream(
@@ -46,19 +58,19 @@ class anthropic_llm:
 
         # __enter__ 这一行才真正发出请求；返回后连接已经开着，调用方要立刻
         # 进 try，中间不要插入可能抛异常的代码。
-        return anthropic_stream(manager, manager.__enter__())
+        return messages_stream(manager, manager.__enter__())
 
     def stream_complete(self, stream):
         # drain 必须在 close 之前：关掉之后再 get_final_message 会 RuntimeError。
         # drain 自己失败（零事件流的裸 AssertionError、中途网络错误）也要保证关闭。
         try:
-            return anthropic_response(stream.raw.get_final_message())
+            return messages_response(stream.raw.get_final_message())
         finally:
             stream.close()
 
 
 
-class anthropic_response(response_protocol):
+class messages_response(response_protocol):
     def __init__(self, response):
         self.response = response
 
@@ -148,18 +160,20 @@ class anthropic_response(response_protocol):
     def tool_call_id(self, call):
         return call.id
 
-    def tool_continuation(self, calls, results):
-        # assistant 那条必须带上完整的原始块列表（含 thinking），否则下一轮报错
+    def tool_continuation(self, results):
+        # assistant 那条必须带上完整的原始块列表（含 thinking），否则下一轮报错。
+        # 调用项从 self.tool_calls 现取，不再由调用方传进来：两边同源，就不存在
+        # 传一份对不上的列表被 zip 静默截断的可能。
         return [
             {"role": "assistant", "content": self.output},
             {"role": "user", "content": [
                 {"type": "tool_result", "tool_use_id": call.id, "content": result}
-                for call, result in zip(calls, results)
+                for call, result in zip(self.tool_calls, results)
             ]},
         ]
 
 
-class anthropic_stream(stream_protocol):
+class messages_stream(stream_protocol):
     def __init__(self, manager, raw):
         self.manager = manager
         self._raw = raw
