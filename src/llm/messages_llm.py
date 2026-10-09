@@ -9,6 +9,8 @@ class messages_llm(llm_protocol):
     def __init__(self, provider: dict):
         self.client = anthropic.Client(api_key=provider["api_key"], base_url=provider["base_url"])
 
+    # Anthropic 侧没实现，所以 get_model_list 不在 llm_protocol 里（OpenAI 侧是活的），
+    # 放进去会让本类构造期 TypeError。要给它定协议，先决定这一侧怎么取模型列表。
     # def get_model_list(self):
     #     try:
     #         return self.client.models.list()
@@ -18,6 +20,9 @@ class messages_llm(llm_protocol):
     def _params(self, model, instructions, input, effort, tools, max_output_tokens):
         # 阻塞与流式两条路共用，避免哪天只改了一边导致请求体悄悄分叉。
         # max_tokens 没有默认值，这个 16384 兜底必须留在这里。
+        # 与 responses_llm._params 刻意各留一份、不抽成模块级函数：两侧键名不同
+        # （system/messages vs instructions/input，output_config vs reasoning），
+        # 合并会把两家差异藏进一个函数，是"看着像重复、其实不能 DRY"。
         params = dict(
             max_tokens = max_output_tokens if max_output_tokens is not None else 16384,
             model = model,
@@ -42,9 +47,12 @@ class messages_llm(llm_protocol):
         ]
 
     def get_response(self, model: str, instructions: str, input, effort: str, tools: list = None, max_output_tokens: int = None):
-        # 注意：非流式会被 SDK 的时间预估卡住——max_tokens 超过 21333 时
-        # create 直接抛 ValueError("Streaming is required")。走长输出请用
-        # start_stream / stream_complete。
+        # 注意：非流式会被 SDK 的时间预估卡住——Messages.create 发请求前按
+        # 3600 * max_tokens / 128_000 估时，超过 600 秒（模型不在 SDK 已知表里时
+        # 即 max_tokens > 21333）直接抛 ValueError("Streaming is required")。
+        # 当前配置的输出上限高于它，这条路对现模型必抛。真要复活：显式传 timeout=
+        # （守卫条件是 not is_given(timeout)，给了就跳过预估），代价是硬吃 10 分钟
+        # 上限。OpenAI 侧没有这条守卫。走长输出请用 start_stream / stream_complete。
         response = self.client.messages.create(
             **self._params(model, instructions, input, effort, tools, max_output_tokens)
         )
@@ -56,8 +64,9 @@ class messages_llm(llm_protocol):
             **self._params(model, instructions, input, effort, tools, max_output_tokens)
         )
 
-        # __enter__ 这一行才真正发出请求；返回后连接已经开着，调用方要立刻
-        # 进 try，中间不要插入可能抛异常的代码。
+        # 构造 messages_stream 本身不发请求：真正的发送发生在求值 manager.__enter__()
+        # 这一行（它是构造实参，别误读成"先构造好再发"）。返回后连接已经开着，
+        # 调用方要立刻进 try，中间不要插入可能抛异常的代码。
         return messages_stream(manager, manager.__enter__())
 
     def stream_complete(self, stream):
@@ -186,9 +195,12 @@ class messages_stream(stream_protocol):
         return self._raw
 
     def __iter__(self):
-        # 和 SDK 自己的 MessageStream.text_stream 等价。必须遍历 self._raw 这个
-        # SDK 流对象，不能穿透到它内部的 _raw_stream：终稿快照是 MessageStream
-        # 在 __stream__ 里累积的，绕过去就会"有增量、没终稿"，最后在
+        # 和 SDK 自己的 MessageStream.text_stream 等价——但不用它是有意的：沿用和
+        # responses_llm.__iter__ 同一套手筛，两边读起来一致，不是因为 text_stream 不可用。
+        # 另注：text_stream 是 SDK 在 __init__ 里挂上的实例属性、不是 class 属性，
+        # dir(MessageStream) 查不到，别因此以为它不存在。
+        # 必须遍历 self._raw 这个 SDK 流对象，不能穿透到它内部的 _raw_stream：终稿快照是
+        # MessageStream 在 __stream__ 里累积的，绕过去就会"有增量、没终稿"，最后在
         # stream_complete 里炸出一个看不出原因的 AssertionError。
         for event in self._raw:
             if event.type == "content_block_delta" and event.delta.type == "text_delta":

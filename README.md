@@ -56,7 +56,7 @@ pip install -r requirements.txt
 
 > `efforts` 里出现 `none` 不会报错，但 Anthropic 官方文档的枚举是 `low` / `medium` / `high` / `xhigh` / `max`，没有 `none`。这是第三方兼容端点的自由度，具体是否被接受取决于你的服务商——**deepseek 的 Anthropic 兼容端点实测接受 `none`**（2026-09-29），换个服务商要重新验。
 
-> 配置路径是**相对于当前工作目录**写死的（[utils.py:5](src/utils.py#L5) 的 `API_KEYS_FILE = "src/api_keys.json"`），所以必须**从仓库根目录**运行。
+> 配置路径是**相对于当前工作目录**写死的（[utils.py:7](src/utils.py#L7) 的 `API_KEYS_FILE = "src/api_keys.json"`），所以必须**从仓库根目录**运行。
 
 ## 运行
 
@@ -106,4 +106,4 @@ src/
 - **工具表里只有一个样例工具。** [tool_console.py](src/tools/tool_console.py) 里的 `get_weather` 返回写死的假数据：链路已接通（注册表存中立形状，线上形状由 wrapper 转换），但还没有真工具，也没有权限确认——注册进来就直执行。工具结果整段进 context，没有长度上限。
 - **没有测试。** 没有测试框架，验证靠临时脚本。
 - **只有 Anthropic 那条路端到端验过。** OpenAI 那条目前只有静态检查——配置里没有可用的 OpenAI 兼容 provider。
-- **`get_response` 对超大输出上限不可用。** 原因见 [src/llm/AGENTS.md](src/llm/AGENTS.md) 的「Anthropic 侧特有的坑」。
+- **`get_response` 对超大输出上限不可用。** 原因见 [src/llm/AGENTS.md](src/llm/AGENTS.md) 的「Per provider」小节里 Anthropic 那一条。

@@ -7,6 +7,8 @@ class responses_llm(llm_protocol):
         self.client = openai.OpenAI(api_key=provider["api_key"], base_url=provider["base_url"])
 
     def get_model_list(self):
+        # 两侧不对称：只有这一侧活着（messages_llm 里是注释掉的），所以它不在
+        # llm_protocol 里。
         try:
             model_list = self.client.models.list()
         except openai.APIError:
@@ -17,7 +19,9 @@ class responses_llm(llm_protocol):
 
 
     def _params(self, model, instructions, input, effort, tools, max_output_tokens):
-        # 阻塞与流式两条路共用，避免哪天只改了一边导致请求体悄悄分叉
+        # 阻塞与流式两条路共用，避免哪天只改了一边导致请求体悄悄分叉。
+        # 与 messages_llm._params 刻意各留一份、不抽成模块级函数（两侧键名不同）；
+        # 本侧独有 temperature 与 tool_choice。
         params = dict(
             max_output_tokens = max_output_tokens if max_output_tokens is not None else 16384,
             temperature = 1,
@@ -59,8 +63,9 @@ class responses_llm(llm_protocol):
             **self._params(model, instructions, input, effort, tools, max_output_tokens)
         )
 
-        # __enter__ 这一行才真正发出请求；返回后连接已经开着，调用方要立刻
-        # 进 try，中间不要插入可能抛异常的代码。
+        # 构造 responses_stream 本身不发请求：真正的发送发生在求值 manager.__enter__()
+        # 这一行（它是构造实参，别误读成"先构造好再发"）。返回后连接已经开着，
+        # 调用方要立刻进 try，中间不要插入可能抛异常的代码。
         return responses_stream(manager, manager.__enter__())
 
 
@@ -196,8 +201,11 @@ class responses_stream(stream_protocol):
         return self._raw
 
     def __iter__(self):
-        # OpenAI 这边没有 anthropic 那种 text_stream 便利属性，只能自己筛事件。
-        # 同样必须遍历 self._raw：终稿是 ResponseStream 内部按事件累积出来的。
+        # OpenAI 这边没有 anthropic 那种 text_stream 便利属性，只能自己筛事件
+        # （Anthropic 的 SDK 内部用的就是同一个筛法）。同样必须遍历 self._raw：
+        # 终稿是 ResponseStream 内部按事件累积出来的，绕过去会"有增量、没终稿"，
+        # 最后在 stream_complete 里炸出 RuntimeError: Didn't receive a
+        # response.completed event。
         for event in self._raw:
             if event.type == "response.output_text.delta":
                 yield event.delta

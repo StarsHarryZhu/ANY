@@ -1,6 +1,9 @@
 from abc import abstractmethod
 from typing import Any, Iterator, Protocol
 
+# 每个 wrapper 的三个类各继承一份协议：漏实现任一成员，构造期就 TypeError。
+# 两个 wrapper 的协议成员面是对称的，加协议成员要两边同时加。
+
 
 class llm_protocol(Protocol):
     """messages_llm 与 responses_llm 共同遵守的契约：循环层握着的全部接口。
@@ -18,8 +21,9 @@ class llm_protocol(Protocol):
     def start_stream(self, model: str, instructions: str, input, effort: str, tools: list = None, max_output_tokens: int = None):
         """发起流式请求，返回一个 stream_protocol。
 
-        实现里 `manager.__enter__()` 那一行才真正发出请求；返回后连接已经
-        开着，调用方必须立刻进 try，中间不要插入可能抛异常的代码。
+        构造流对象本身不发请求，只有实现里 `manager.__enter__()` 那一行才真正
+        发出；返回后连接已经开着，调用方必须立刻进 try，中间不要插入可能抛异常
+        的代码。
         """
         ...
 
