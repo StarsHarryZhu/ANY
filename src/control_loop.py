@@ -3,7 +3,7 @@ from rich.markdown import Markdown
 from rich.text import Text
 
 from src.utils import console, load_links, load_system_prompt, resolve_module
-from src.tools.tool_console import tool_console
+from src.tools._tool_console import tool_console
 
 import datetime
 
@@ -92,6 +92,21 @@ def control_loop(llm, models: list, system_prompt: str = None, context: list = N
         context = resumed_context if resumed_context is not None else []
 
     tools = tool_console()
+
+    # 续档后把历史重新打一遍。位置刻意排在所有选择器与工具预置之后：回放紧贴在输入
+    # 提示之上，接着往下聊时一眼能看到聊到哪儿了。
+    # 摊平是 wrapper 的事（context 里是 provider 原生块），本层只认 user / assistant
+    # 两种角色——这里出现按 provider 分叉的形状判断，就说明接缝破了。
+    # 只有选中已有会话才有得放：显式传 context 的调用方没加载会话，历史归它自己管。
+    if resumed_context:
+        console.print("[dim]--- history ---[/dim]")
+        for row in llm.context_display(resumed_context):
+            if row["role"] == "assistant":
+                console.print("[green]Model:[/green]")
+                console.print(Markdown(row["text"]))
+            else:
+                # 用 Text 而不是 f-string：用户当年敲的方括号不该被 rich 当标记解析
+                console.print(Text.assemble(("User: ", "cyan"), row["text"]))
 
     while True:
         try:

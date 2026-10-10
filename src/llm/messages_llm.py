@@ -46,6 +46,37 @@ class messages_llm(llm_protocol):
             for tool in tools
         ]
 
+    def context_display(self, context: list) -> list:
+        # 存档形状 -> 中立的展示行，只在续档回放时用（契约见协议的 docstring）。
+        # 只挑文本块：thinking / redacted_thinking 是内部状态，tool_use / tool_result
+        # 是工具轮的脚手架，回放里都不出现。
+        # 两种消息形状都要认：循环层自己拼的普通轮 content 是字符串，工具轮那两条
+        # 信封（assistant 一条、user 一条）才是块列表。
+        rows = []
+        for message in context:
+            # load_session 只校验顶层是 list，元素形状一概不管：坏档在这里要安静跳过，
+            # 这里抛异常会落在循环层的 try 之外，直接带 traceback 崩掉启动。
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                # 工具轮的 assistant 信封里可能 text 与 tool_use 并存：text 照收，
+                # 其余跳过。按 type 过滤、不按属性取——redacted_thinking 没有
+                # thinking 字段，按属性取就是 reasoning_text 那边躲过的坑。
+                text = "".join(
+                    block.get("text") or ""
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                )
+            else:
+                continue
+            if text:
+                rows.append({"role": "assistant" if message.get("role") == "assistant" else "user", "text": text})
+        return rows
+
+
     def get_response(self, model: str, instructions: str, input, effort: str, tools: list = None, max_output_tokens: int = None):
         # 注意：非流式会被 SDK 的时间预估卡住——Messages.create 发请求前按
         # 3600 * max_tokens / 128_000 估时，超过 600 秒（模型不在 SDK 已知表里时

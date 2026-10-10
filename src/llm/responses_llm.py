@@ -50,6 +50,36 @@ class responses_llm(llm_protocol):
         ]
 
 
+    def context_display(self, context: list) -> list:
+        # 与 messages_llm.context_display 同一件事，形状完全不同：本侧 context 里
+        # 混着循环层自己拼的 {"role", "content": 字符串} 和工具轮追加的裸 item
+        # （function_call / function_call_output），回放只取文本，那两种裸 item 与
+        # reasoning item 一概跳过。
+        rows = []
+        for item in context:
+            # 坏档安静跳过，理由同 messages 侧：这里在循环层的 try 之外。
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("type")
+            if kind is None:
+                # 循环层拼的普通轮。注意本侧的最终回答也是这么存的（control_loop 那句
+                # context.append），不是原生的 output message item。
+                content = item.get("content")
+                text = content if isinstance(content, str) else ""
+            elif kind == "message":
+                # 原生 message item：正文在块列表里，两个方向的文本块类型各一种。
+                text = "".join(
+                    block.get("text") or ""
+                    for block in (item.get("content") or [])
+                    if isinstance(block, dict) and block.get("type") in ("input_text", "output_text")
+                )
+            else:
+                continue
+            if text:
+                rows.append({"role": "assistant" if item.get("role") == "assistant" else "user", "text": text})
+        return rows
+
+
     def get_response(self, model: str, instructions: str, input, effort: str, tools: list = None, max_output_tokens: int = None):
         response = self.client.responses.create(
             **self._params(model, instructions, input, effort, tools, max_output_tokens)

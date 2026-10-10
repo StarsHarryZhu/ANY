@@ -1,0 +1,6 @@
+{
+  "tools": {
+    "src.tools.timer": "current_time",
+    "src.tools.location": "current_location"
+  }
+}

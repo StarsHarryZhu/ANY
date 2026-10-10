@@ -54,6 +54,26 @@ class llm_protocol(Protocol):
         """
         ...
 
+    @abstractmethod
+    def context_display(self, context: list) -> list:
+        """把 context 摊平成中立的展示行，供循环层在续档时回放历史。
+
+        入参是**存档里读回来的形状**（json.load 出来的 dict），不是活着的 SDK
+        对象：目前唯一的调用点是刚 load_session 完那一刻。将来要传活着的
+        context，先过一遍 model_dump(mode="json")。
+
+        返回一串 {"role": "user"|"assistant", "text": str}：角色只有这两种
+        （本家的其它角色在本层归到 user），text 是纯文本，assistant 那行是
+        Markdown 原文，渲染是循环层的事。空 text 的行不产出——thinking-only
+        的回复在 context 里就是一条内容为空的 assistant 消息，回放出来会是一个
+        没有正文的 "Model:"。
+
+        存档里的块形状是本家的私事，摊平只能在本层做：循环层因此不必知道
+        Anthropic 的 content 块列表和 OpenAI 的裸 item 有什么区别，也就不必按
+        provider 分叉。回放只取文本，工具调用与思考块都不进来。
+        """
+        ...
+
 
 class response_protocol(Protocol):
     """messages_response 与 responses_response 共同遵守的契约。

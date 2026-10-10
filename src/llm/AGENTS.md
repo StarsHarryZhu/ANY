@@ -14,6 +14,7 @@ The three protocols are declared in [protocol.py](protocol.py): `llm_protocol` (
 - **Build the request body in `_params()` only.** `get_response` and `start_stream` both go through it.
 - **Convert tool shapes in `tool_definitions()` only.** The registry hands over the neutral `{name, description, parameters}`; each side reshapes it here.
 - **`tool_continuation(results)` is the only way a tool turn re-enters `context`.** The envelope is this side's decision, and the call items come from `self.tool_calls`, not from the caller.
+- **`context_display(context)` is the only place that knows how a stored `context` is shaped.** It flattens an archive's provider-native blocks into neutral `{role, text}` rows (`user` / `assistant` only, text only — no tool calls, no thinking) for the loop's resume replay. It takes the JSON form the session file holds (dicts), not live SDK objects, and it is called only on a freshly loaded session. It returns rows and prints nothing: rendering stays in the loop, so a wrapper still imports no rich.
 - **`start_stream` sends the request on `manager.__enter__()`.** The caller must put nothing that can raise between that call and its `try`.
 - **`stream_complete` is `try: drain finally: close`, and `__iter__` consumes the SDK stream object itself, never its inner `_raw_stream`.** The stream is single-pass.
 - **Token properties differ per provider.** `input_tokens` excludes cache on Anthropic and includes it on OpenAI, so `used_context` and `cache_hit_rate` invert accordingly. Read the docstrings.
@@ -35,6 +36,8 @@ responses_llm.py   OpenAI Responses API wrapper
 ## Progress & goals
 
 The messages path is verified end-to-end against a live endpoint, the tool turn included — the thinking signature survives the round trip. The responses side is written but has only been checked statically.
+
+`context_display` is checked on both sides against synthetic archives (tool turns, empty assistant messages, malformed entries); no resume has been replayed live yet.
 
 Goals:
 

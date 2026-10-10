@@ -1,0 +1,6 @@
+{
+  "preset_name": "全量模式",
+  "tools": [
+    ["no-restriction", 0]
+  ]
+}
