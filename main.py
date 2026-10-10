@@ -20,7 +20,12 @@ def main():
         raise ValueError(f'providers.{apis_config["current_provider"]}.API 必须是 "messages" 或 "responses"，现在是 {api!r}')
 
 
-    control_loop(llm, provider["models"])
+    control_loop(
+        llm,
+        provider["models"],
+        # 只作为不透明身份写进会话文件（用于判断能否续档），循环层不解读。
+        provider_meta={"provider": apis_config["current_provider"], "API": api},
+    )
 
 
 if __name__ == "__main__":
