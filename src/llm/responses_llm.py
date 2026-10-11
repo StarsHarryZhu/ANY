@@ -52,20 +52,31 @@ class responses_llm(llm_protocol):
 
     def context_display(self, context: list) -> list:
         # 与 messages_llm.context_display 同一件事，形状完全不同：本侧 context 里
-        # 混着循环层自己拼的 {"role", "content": 字符串} 和工具轮追加的裸 item
-        # （function_call / function_call_output），回放只取文本，那两种裸 item 与
-        # reasoning item 一概跳过。
+        # 混着循环层自己拼的 {"role", "content": 字符串} 和工具轮追加的裸 item，
+        # function_call 与 function_call_output 靠 call_id 配对成一条 [tool] 行。
+        # reasoning item 跳过——活着时它的文本也没上过屏。
         rows = []
+        pending = {}  # call_id -> 那一行，等后面的 function_call_output 补上 result
         for item in context:
             # 坏档安静跳过，理由同 messages 侧：这里在循环层的 try 之外。
             if not isinstance(item, dict):
                 continue
             kind = item.get("type")
-            if kind is None:
-                # 循环层拼的普通轮。注意本侧的最终回答也是这么存的（control_loop 那句
-                # context.append），不是原生的 output message item。
-                content = item.get("content")
-                text = content if isinstance(content, str) else ""
+            if kind == "function_call":
+                row = {
+                    "role": "tool",
+                    "name": item.get("name") or "",
+                    # 本侧的 arguments 本来就是 JSON 字符串，原样给（同 tool_call_arguments）
+                    "arguments": item.get("arguments") or "",
+                    "result": None,
+                }
+                pending[item.get("call_id")] = row
+                rows.append(row)
+            elif kind == "function_call_output":
+                row = pending.get(item.get("call_id"))
+                if row is not None:
+                    output = item.get("output")
+                    row["result"] = output if isinstance(output, str) else ""
             elif kind == "message":
                 # 原生 message item：正文在块列表里，两个方向的文本块类型各一种。
                 text = "".join(
@@ -73,10 +84,14 @@ class responses_llm(llm_protocol):
                     for block in (item.get("content") or [])
                     if isinstance(block, dict) and block.get("type") in ("input_text", "output_text")
                 )
-            else:
-                continue
-            if text:
-                rows.append({"role": "assistant" if item.get("role") == "assistant" else "user", "text": text})
+                if text:
+                    rows.append({"role": "assistant" if item.get("role") == "assistant" else "user", "text": text})
+            elif kind is None:
+                # 循环层拼的普通轮。注意本侧的最终回答也是这么存的（control_loop 那句
+                # context.append），不是原生的 output message item。
+                content = item.get("content")
+                if isinstance(content, str) and content:
+                    rows.append({"role": "assistant" if item.get("role") == "assistant" else "user", "text": content})
         return rows
 
 

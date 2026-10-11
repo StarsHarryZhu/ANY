@@ -48,32 +48,63 @@ class messages_llm(llm_protocol):
 
     def context_display(self, context: list) -> list:
         # 存档形状 -> 中立的展示行，只在续档回放时用（契约见协议的 docstring）。
-        # 只挑文本块：thinking / redacted_thinking 是内部状态，tool_use / tool_result
-        # 是工具轮的脚手架，回放里都不出现。
+        # 回放要跟当时屏幕上的一致：text 进正文行，tool_use 与后面那条 tool_result
+        # 配成一条 [tool] 行，thinking / redacted_thinking 跳过（活着时也没显示过）。
         # 两种消息形状都要认：循环层自己拼的普通轮 content 是字符串，工具轮那两条
         # 信封（assistant 一条、user 一条）才是块列表。
         rows = []
+        pending = {}  # tool_use_id -> 那一行，等后面 user 消息里的 tool_result 补上 result
         for message in context:
             # load_session 只校验顶层是 list，元素形状一概不管：坏档在这里要安静跳过，
             # 这里抛异常会落在循环层的 try 之外，直接带 traceback 崩掉启动。
             if not isinstance(message, dict):
                 continue
+            role = "assistant" if message.get("role") == "assistant" else "user"
             content = message.get("content")
             if isinstance(content, str):
-                text = content
-            elif isinstance(content, list):
-                # 工具轮的 assistant 信封里可能 text 与 tool_use 并存：text 照收，
-                # 其余跳过。按 type 过滤、不按属性取——redacted_thinking 没有
-                # thinking 字段，按属性取就是 reasoning_text 那边躲过的坑。
-                text = "".join(
-                    block.get("text") or ""
-                    for block in content
-                    if isinstance(block, dict) and block.get("type") == "text"
-                )
-            else:
+                if content:
+                    rows.append({"role": role, "text": content})
                 continue
+            if not isinstance(content, list):
+                continue
+            # 攒着的文本遇见工具块就成行：块顺序（thinking, text, tool_use）因此
+            # 就是回放的顺序，与当时一致。
+            text = []
+            for block in content:
+                # 按 type 过滤、不按属性取——redacted_thinking 没有 thinking 字段，
+                # 按属性取就是 reasoning_text 那边躲过的坑。
+                if not isinstance(block, dict):
+                    continue
+                kind = block.get("type")
+                if kind == "text":
+                    text.append(block.get("text") or "")
+                elif kind == "tool_use":
+                    if text:
+                        rows.append({"role": role, "text": "".join(text)})
+                        text = []
+                    row = {
+                        "role": "tool",
+                        "name": block.get("name") or "",
+                        # 与 tool_call_arguments 同一写法：回放那行跟当时屏幕上那行逐字相同
+                        "arguments": json.dumps(block.get("input") or {}, ensure_ascii=False),
+                        "result": None,
+                    }
+                    pending[block.get("id")] = row
+                    rows.append(row)
+                elif kind == "tool_result":
+                    row = pending.get(block.get("tool_use_id"))
+                    if row is not None:
+                        result = block.get("content")
+                        if isinstance(result, list):
+                            # content 也允许是块列表，取其中的 text（与字符串那种写法等价）
+                            result = "".join(
+                                inner.get("text") or ""
+                                for inner in result
+                                if isinstance(inner, dict) and inner.get("type") == "text"
+                            )
+                        row["result"] = result if isinstance(result, str) else ""
             if text:
-                rows.append({"role": "assistant" if message.get("role") == "assistant" else "user", "text": text})
+                rows.append({"role": role, "text": "".join(text)})
         return rows
 
 

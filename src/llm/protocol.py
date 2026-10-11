@@ -62,15 +62,22 @@ class llm_protocol(Protocol):
         对象：目前唯一的调用点是刚 load_session 完那一刻。将来要传活着的
         context，先过一遍 model_dump(mode="json")。
 
-        返回一串 {"role": "user"|"assistant", "text": str}：角色只有这两种
-        （本家的其它角色在本层归到 user），text 是纯文本，assistant 那行是
-        Markdown 原文，渲染是循环层的事。空 text 的行不产出——thinking-only
-        的回复在 context 里就是一条内容为空的 assistant 消息，回放出来会是一个
-        没有正文的 "Model:"。
+        返回一串行，每行一个 dict，role 只有三种：
 
-        存档里的块形状是本家的私事，摊平只能在本层做：循环层因此不必知道
+            {"role": "user", "text": str}
+            {"role": "assistant", "text": str}
+            {"role": "tool", "name": str, "arguments": str, "result": str | None}
+
+        arguments 是 JSON 字符串，写法与 tool_call_arguments 一致——回放出来的
+        那行因此和当时屏幕上那行逐字相同。result 为 None 表示这段历史里那个
+        调用没有配对的回执。空 text 的行不产出：thinking-only 的回复在 context
+        里就是一条内容为空的 assistant 消息，回放出来会是一个没有正文的
+        "Model:"。
+
+        取哪些块、怎么配对（tool_use 与 tool_result、function_call 与
+        function_call_output）全是本家私事，只能在本层做：循环层因此不必知道
         Anthropic 的 content 块列表和 OpenAI 的裸 item 有什么区别，也就不必按
-        provider 分叉。回放只取文本，工具调用与思考块都不进来。
+        provider 分叉。思考块不进回放——活着的时候它也没上过屏。
         """
         ...
 
