@@ -21,7 +21,7 @@ Read [src/AGENTS.md](src/AGENTS.md) before changing code, and [src/llm/AGENTS.md
 - **Provider identity reaches the loop only as an opaque `provider_meta` dict.** The loop never compares it; the `API`-kind compatibility check that decides whether a session may be resumed lives in the session loader ([default_saver_loader.py](src/default_saver_loader.py)).
 - **Sessions are named, and the session name is an opaque handle to the loop.** `choose_session` (the naming picker) lives in the saver_loader slot, not the loop; the loop only forwards the name back to `save_session`. Writes are atomic — a `.tmp` file then `os.replace` — and never happen on the cancel path, or at all when the caller passed `context` explicitly. `sessions/` is gitignored plaintext user data, and the `context` it round-trips holds raw SDK blocks — serialized through `model_dump(mode="json")`, which is what preserves Anthropic thinking signatures. Resuming replays the history to the terminal, but through the wrapper: the loop renders the neutral rows `context_display()` returns and never reads a provider block itself.
 - **Read the version notes before upgrading an SDK, and sync the docs after.** The behavior recorded in the code comments was measured against the pinned versions. Most fragile: the SDK stream object's internals (the wrappers' `__iter__`) and rich Live's overflow policy (see `STREAM_TAIL` in [control_loop.py](src/control_loop.py)).
-- **Every AGENTS.md uses one fixed format** — the four top-level sections Role / Constraints & protocols / Directory / Progress & goals (subsections allowed beneath them) — and is written in English. README and code comments are written in Chinese.
+- **Every AGENTS.md uses one fixed format** — the four top-level sections Role / Constraints & protocols / Directory / Progress & goals (subsections allowed beneath them) — and is written in English. The README is bilingual, kept in sync: [README.md](README.md) in English, [README_zh.md](README_zh.md) in Chinese. Code comments are written in Chinese.
 - **There is no test framework and no test files.** Verify by hand.
 
 ## Directory
@@ -36,7 +36,8 @@ configs/                 Every .json config, CWD-relative like the rest (see src
   api_keys.json            Main config for this machine (gitignored; schema in README.md)
 requirements.txt         Six pinned dependencies
 .gitignore               Ignore list (api_keys.json, sessions/, .env, .venv, __pycache__, *.log, *.db)
-README.md                User-facing docs: install, config schema, running, known limitations
+README.md                User-facing docs, English: install, config schema, running, known limitations
+README_zh.md             The same README in Chinese; the two are kept in sync
 src/                     All source code (see src/AGENTS.md)
   llm/                     Protocol + the two provider wrappers (see src/llm/AGENTS.md)
   tools/                   Tool registry and execution (see src/tools/AGENTS.md)
