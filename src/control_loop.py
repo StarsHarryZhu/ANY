@@ -124,6 +124,9 @@ def control_loop(llm, models: list, system_prompt: str = None, context: list = N
     while True:
         try:
             user_input = console.input("[cyan]User:[/cyan] ")
+            if not user_input.strip():
+                console.print("[dim]Empty input, please try again.[/dim]")
+                continue
 
             context.append({"role": "user", "content": user_input})
 
