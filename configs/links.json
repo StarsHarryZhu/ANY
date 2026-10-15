@@ -1,4 +1,5 @@
 {
+  "version": 1,
   "choosing_module": "src.default_choosing",
   "saver_loader_module": "src.default_saver_loader",
   "system_prompt_file": "src/default_system_prompt.md"

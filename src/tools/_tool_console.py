@@ -1,12 +1,18 @@
 import importlib
 import json
 
-from src.utils import TOOLS_FILE, console, load_preset_files, load_tools, select, to_questionary_type
+from src.utils import TOOLS_FILE, config_version_problem, load_preset_files, load_tools, note, select, to_questionary_type
 
 # "全放行"哨兵：出现在清单第一位＝不过滤，全放；出现在别的位置＝跳过这一条。
 # ID 0 留给它（见 _build_registry 的 ID 检查），所以这个二元组不会与任何真工具撞上，
 # 光看 preset.json 也能一眼认出哪条是哨兵。
 NO_RESTRICTION = ("no-restriction", 0)
+
+# 预置文件的格式号。闸门在 _load_presets —— 那是全仓库唯一打开预置文件的地方，
+# 所以 presets_dir.json 列出来的和 DEFAULT_PRESET_FILES 兜底的，两条路都从它过。
+# 与 src/utils.py 里那几个 *_FORMAT 同一套规则：改预置文件的形状时，同一个改动里 +1，
+# 并给仓库里那份（configs/presets/full/preset.json）重新盖章。
+PRESET_FORMAT = 1
 
 def _load_tool_classes() -> list:
     # tools.json 的 (模块路径, 类名) -> 类对象。这里是全仓库唯一 import 具体工具模块的地方：
@@ -38,7 +44,7 @@ def _load_tool_classes() -> list:
         # 清单读不出来（文件缺失/坏掉/空表）那几种情况 load_tools 已经报过原因，这里不再补一句，
         # 否则同一件事会连着打两行。
         tail = " (no tool loaded)" if not classes else ""
-        console.print(f"[dim]{TOOLS_FILE}: skipped {', '.join(failures)}{tail}[/dim]")
+        note(f"{TOOLS_FILE}: skipped {', '.join(failures)}{tail}")
     return classes
 
 
@@ -76,12 +82,19 @@ def _build_registry(classes: list) -> list:
             # preset.json 里的选择键，一个不唯一的 ID 不配当身份。
             raise ValueError(f"tool id {tool_id:#x} is already used by {by_id[tool_id]!r}")
         by_id[tool_id] = name
+        # 可选能力位：声明的工具除了 JSON 参数，还会收到活的 context 和 complete 回调
+        # （见 tool_run）。不声明是常态——current_time / current_location 都不声明。
+        # 非 bool 一律抛：True 和 "yes" 都能进 if，静默收下等于把一个写错的契约放行到运行时。
+        needs_context = getattr(instance, "NEEDS_CONTEXT", False)
+        if not isinstance(needs_context, bool):
+            raise ValueError(f"tool {name!r}: NEEDS_CONTEXT must be a bool, got {needs_context!r}")
         registry.append({
             "name": name,
             "id": tool_id,
             "description": method["description"],
             "parameters": method["parameters"],
             "impl": instance.toolcall,
+            "needs_context": needs_context,
         })
     return registry
 
@@ -131,8 +144,20 @@ def _load_presets() -> list:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             failures.append(f"{path!r} ({type(error).__name__}: {error})")
             continue
-        # 顶层必须是对象：preset_name 和 tools 两个字段都在里面。
-        entries = document.get("tools") if isinstance(document, dict) else None
+        # 顶层必须是对象：preset_name 和 tools 两个字段都在里面。不是对象的报"没有 tools 列表"
+        # 而不是"版本缺字段"——后者答非所问。
+        if not isinstance(document, dict):
+            failures.append(f"{path!r} (no 'tools' list)")
+            continue
+        # 格式闸门排在 tools 检查之前：一份版本对不上的预置不该被误报成"没有 tools 列表"。
+        # 理由积进 failures，与"读不出来""没有 tools 列表"共用那一条汇总行：这一层已经有
+        # 自己的汇总行了，再打印一次就是同一个文件吵两次。
+        # 后果与"这份预置文件坏了"完全一致（跳过它；一份都不剩时全量放行），不是新开的路。
+        problem = config_version_problem(document.get("version"), PRESET_FORMAT)
+        if problem:
+            failures.append(f"{path!r} ({problem})")
+            continue
+        entries = document.get("tools")
         if not isinstance(entries, list):
             failures.append(f"{path!r} (no 'tools' list)")
             continue
@@ -140,13 +165,13 @@ def _load_presets() -> list:
         if not isinstance(label, str) or not label:
             # 显示名只是装饰：缺了退回显示路径，清单照常执行——不能因为一个标签让整份预置失效，
             # 更不能因此放开全部工具。
-            console.print(f"[dim]preset {path!r}: no 'preset_name'; showing the path instead[/dim]")
+            note(f"preset {path!r}: no 'preset_name'; showing the path instead")
             label = path
         presets.append({"path": path, "label": label, "entries": entries})
     if failures:
-        console.print(f"[dim]preset(s) skipped: {'; '.join(failures)}[/dim]")
+        note(f"preset(s) skipped: {'; '.join(failures)}")
     if not presets:
-        console.print("[dim]no usable preset; loading all tools[/dim]")
+        note("no usable preset; loading all tools")
     return presets
 
 
@@ -169,7 +194,7 @@ def _choose_preset(presets: list):
         # 取消不退出：这里不是模型选择器那种"取消＝不想聊"的承诺点，工具只是可选层，退回默认
         # （全放行）继续跑，只报一行。也不能抛 KeyboardInterrupt：tool_console 在 control_loop
         # 的 try 之外构造，抛出去只会带 traceback 崩掉整个启动。
-        console.print("[dim]tool preset selection cancelled; loading all tools[/dim]")
+        note("tool preset selection cancelled; loading all tools")
         return None
     return picked
 
@@ -203,12 +228,12 @@ def _select_tools(registry: list, preset) -> list:
     # 一份清单是过滤器，顺手把顺序重排了才是意外。
     selected = [item for item in registry if item["name"] in wanted]
     if notes:
-        console.print(f"[dim]preset {preset['path']!r}: {'; '.join(notes)}[/dim]")
+        note(f"preset {preset['path']!r}: {'; '.join(notes)}")
     if not selected:
         # 清单非空却一条都没选中：预置的用途是收紧，失败方向必须是收紧那侧——名字写错的后果
         # 是这轮没有工具（上面已点名），绝不能静默放开全部。
         # 顺带这也是"全程无工具"唯一的可见提示：空 tools 会被 wrapper 的 if tools: 静默丢掉。
-        console.print("[dim]preset selects no tools; the model runs without any tools[/dim]")
+        note("preset selects no tools; the model runs without any tools")
     return selected
 
 
@@ -221,6 +246,9 @@ class tool_console():
         chosen = _select_tools(_build_registry(_load_tool_classes()), _choose_preset(_load_presets()))
         # impls 的键与 tools 里的 name 同源（都取自注册项），"两处对不上"从结构上没了。
         self.impls = {item["name"]: item["impl"] for item in chosen}
+        # 声明了 NEEDS_CONTEXT 的工具名。tool_run 按它决定要不要多递两个参数——
+        # 不能一律多传：没声明的工具的 toolcall() 不收这两个关键字，会 TypeError。
+        self.context_tools = {item["name"] for item in chosen if item["needs_context"]}
         self.tools = [
             {
                 "name": item["name"],
@@ -245,11 +273,19 @@ class tool_console():
         return self.tools
 
 
-    def tool_run(self, name: str, arguments: str) -> str:
+    def tool_run(self, name: str, arguments: str, context: list = None, complete=None) -> str:
         try:
             # arguments 是 JSON 字符串而非 dict，wrapper 的 tool_call_arguments()
             # 已统一过，直接 loads
-            return json.dumps(self.impls[name](**json.loads(arguments)), ensure_ascii=False)
+            params = json.loads(arguments)
+            if name in self.context_tools:
+                # 声明了 NEEDS_CONTEXT 的工具：多两个关键字参数。context 是循环层手里那个
+                # 活的列表（就地改才有效），complete 是它构造的一次性模型调用回调——
+                # 工具层因此仍然不认识 llm，也没 import 它。
+                # 代价是 context / complete 成了保留的参数名：工具的 JSON schema 里不许有
+                # 同名的属性（有的话这里会 TypeError，转成 tool_error 看得见）。
+                return json.dumps(self.impls[name](context=context, complete=complete, **params), ensure_ascii=False)
+            return json.dumps(self.impls[name](**params), ensure_ascii=False)
         except Exception as error:
             # 捕获的是 Exception：名字对不上（KeyError）、参数不是合法 JSON
             # （JSONDecodeError）、实现签名不匹配（TypeError）、工具自己抛的异常，都汇到这里。

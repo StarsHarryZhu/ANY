@@ -1,3 +1,5 @@
+from rich.text import Text
+
 from src.utils import console, select, to_questionary_type
 
 # 默认的模型 / 推理强度选择器：原来写在 control_loop.py 里的 questionary 单选，搬到这个
@@ -19,6 +21,9 @@ def reasoning_choose(model: dict):
     # 所以提前按"取消"处理，让调用方走正常的退出路径。
     efforts = model.get("efforts") or []
     if not efforts:
-        console.print(f"[red]Model {model.get('name')!r} has no efforts configured.[/red]")
+        # 用 Text 而不是 f"[red]...[/red]"：模型名来自配置文件，里面的方括号会被 rich 当标记
+        # 解析，解析不了就抛 MarkupError（同 utils.note 的理由）。
+        console.print(Text(f"Model {model.get('name')!r} has no efforts configured.", style="red"))
         return None
-    return select(to_questionary_type(efforts, None), "Select reasoning effort")
+    # efforts 是一串字符串，本来就是 questionary 认的形状，不必过 to_questionary_type
+    return select(efforts, "Select reasoning effort")

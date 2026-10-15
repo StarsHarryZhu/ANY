@@ -1,7 +1,9 @@
 import json
 import os
 
-from src.utils import ask_text, console, select
+from rich.text import Text
+
+from src.utils import ask_text, console, note, select
 
 # 会话存档目录：仓库根下的 sessions/，一个会话一个文件，名字由用户取。
 # 与 api_keys.json 同一约定——相对当前工作目录写死，只从仓库根运行才对。
@@ -12,7 +14,9 @@ SESSION_SUFFIX = ".json"
 
 # 存档格式版本。context 之外的字段含义一改就 +1；版本对不上＝不加载（旧文件留成 .bak），
 # 将来升级格式时旧代码不会把不认识的新字段当成有效数据用。
-SESSION_FORMAT = 1
+# 2：多了 messages（完整历史对话）。1 的档只有 context，加载下去会缺一整份历史，
+# 所以直接按版本不符弃掉——不写"把 context 当 messages 用"的兼容分支。
+SESSION_FORMAT = 2
 
 # 选择器里"新建会话"那一项的哨兵值。用 object() 而不是某个字符串：任何字符串都可能是
 # 合法的会话名，哨兵必须不可能与真名字撞上（questionary 的 value 可以是任意对象）。
@@ -81,9 +85,9 @@ def choose_session():
         name = name.strip()  # 顺手去掉手滑的空格，而不是判它非法
         problem = _name_problem(name)
         if problem:
-            console.print(f"[red]Invalid session name: {problem}.[/red]")
+            console.print(Text(f"Invalid session name: {problem}.", style="red"))
             continue
-        console.print(f"[dim]New session -> {_session_path(name)}[/dim]")
+        note(f"New session -> {_session_path(name)}")
         return name
 
 
@@ -103,9 +107,12 @@ def _jsonable(obj):
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
-def save_session(name: str, context: list, model: str, effort: str, provider_meta: dict = None) -> None:
+def save_session(name: str, context: list, messages: list, model: str, effort: str, provider_meta: dict = None) -> None:
     # 整篇重写。失败只打一行 dim 就返回：写不进盘不该弄死对话（先例：tool_run 把内部
     # 失败转成可见输出，不往上抛）。
+    # 两份历史都存：context 是当前发给模型的工作集（被 compact 换过就是压缩后的），
+    # messages 是完整历史对话（只增不减）。少存哪一份都会丢东西——只存 context 就丢了
+    # 压缩前的原文，只存 messages 则续档时不知道该给模型发什么。
     provider_meta = provider_meta or {}
     document = {
         "version": SESSION_FORMAT,
@@ -114,6 +121,7 @@ def save_session(name: str, context: list, model: str, effort: str, provider_met
         "model": model,
         "effort": effort,
         "context": context,
+        "messages": messages,
     }
     path = _session_path(name)
     # 先写同目录临时文件再 os.replace：同一文件系统内 replace 是原子的，Ctrl-C 落在写盘
@@ -130,23 +138,23 @@ def save_session(name: str, context: list, model: str, effort: str, provider_met
         # 捕 Exception 而不是只捕 OSError：context 里进了不可序列化的对象时，失败点在一轮
         # 结束处，不能让它把整个 REPL 带崩。刻意不接 BaseException：KeyboardInterrupt /
         # SystemExit 照旧穿出去，Ctrl-C 仍然受控。
-        console.print(f"[dim]session save failed ({type(error).__name__}: {error})[/dim]")
+        note(f"session save failed ({type(error).__name__}: {error})")
 
 
 def _discard(path: str, reason: str):
     # 能解析但不能用的存档：改名 .bak 留底后全新开始。必须留底——自动保存每轮都跑，
     # 不备份的话第一次保存就把用户的旧会话覆盖没了。.bak 已存在会被这次改名覆盖，
     # 只保留最近一份。
-    console.print(f"[dim]session not resumed ({reason}); starting fresh, old file kept as {path}.bak[/dim]")
+    note(f"session not resumed ({reason}); starting fresh, old file kept as {path}.bak")
     try:
         os.replace(path, path + ".bak")
     except OSError as error:
-        console.print(f"[dim]session backup failed ({type(error).__name__}: {error})[/dim]")
+        note(f"session backup failed ({type(error).__name__}: {error})")
     return None
 
 
 def load_session(name: str, provider_meta: dict = None):
-    # 返回含 version / provider / API / model / effort / context 的 dict，或 None。
+    # 返回含 version / provider / API / model / effort / context / messages 的 dict，或 None。
     # 返回 None 且静默的唯一来源是"这个会话还没有文件"（新建会话的正常状态）；其余每种
     # 都打一行 dim。
     path = _session_path(name)
@@ -157,7 +165,7 @@ def load_session(name: str, provider_meta: dict = None):
         return None
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         # 纯解析失败不留 .bak：没有值得保全的内容，下一次保存直接覆盖。
-        console.print(f"[dim]session {name!r} unreadable ({type(error).__name__}: {error}); starting fresh[/dim]")
+        note(f"session {name!r} unreadable ({type(error).__name__}: {error}); starting fresh")
         return None
 
     if not isinstance(document, dict):
@@ -166,6 +174,9 @@ def load_session(name: str, provider_meta: dict = None):
         return _discard(path, f"format version {document.get('version')!r}, expected {SESSION_FORMAT}")
     if not isinstance(document.get("context"), list):
         return _discard(path, "no context list")
+    # messages 和 context 一样是必需字段，缺了不放行：续档前半程要放它，没有就得每处判一次空。
+    if not isinstance(document.get("messages"), list):
+        return _discard(path, "no messages list")
 
     # provider 身份只在这里比较：循环层把 provider_meta 原样搬进来、不解读，循环层因此
     # 没有按 provider 分叉的机会。
@@ -180,6 +191,6 @@ def load_session(name: str, provider_meta: dict = None):
             return _discard(path, f"saved under API {saved_api!r}, now running {current_api!r}")
         saved_provider, current_provider = document.get("provider"), provider_meta.get("provider")
         if saved_provider and current_provider and saved_provider != current_provider:
-            console.print(f"[dim]note: session was saved under provider {saved_provider!r}, now {current_provider!r}; thinking signatures may be rejected[/dim]")
+            note(f"note: session was saved under provider {saved_provider!r}, now {current_provider!r}; thinking signatures may be rejected")
 
     return document

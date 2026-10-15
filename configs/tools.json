@@ -1,6 +1,8 @@
 {
+  "version": 1,
   "tools": {
     "src.tools.timer": "current_time",
-    "src.tools.location": "current_location"
+    "src.tools.location": "current_location",
+    "src.tools.compact": "compact"
   }
 }

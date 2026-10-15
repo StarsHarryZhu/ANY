@@ -140,7 +140,6 @@ class messages_llm(llm_protocol):
             stream.close()
 
 
-
 class messages_response(response_protocol):
     def __init__(self, response):
         self.response = response
